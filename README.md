@@ -91,6 +91,104 @@ the sources with `makepkg -o`. The container is committed. Phase 2 (no network)
 compiles and packages with `makepkg --noextract --nodeps`. This closes the
 build phase against data exfiltration and second-stage payload downloads.
 
+## AUR search & risk screening (`search-aur.sh`)
+
+`search-aur.sh` queries the full AUR metadata
+(`packages-meta-ext-v1.json.gz`), applies combinable filters, sorts the
+results, and annotates each package with a security **risk** score and a
+potential **typosquatting** match. It is complementary to the build scanner:
+use it *before* deciding which package to build or trust.
+
+### Requirements
+
+- `curl` and `jq`.
+- `python3` (optional, only needed for typosquatting detection).
+
+### Usage
+
+```
+./search-aur.sh [options] [N]
+```
+
+`N` (optional, default 100) is the number of results to show.
+
+General search options:
+
+| Option | Meaning |
+| --- | --- |
+| `-q <regex>` | search in name + description + keywords (case-insensitive regex) |
+| `-v <n>` | minimum votes (`NumVotes >= n`) |
+| `-p <x>` | minimum popularity (e.g. `0.5`) |
+| `-s <field>` | sort by `name`, `popularity` (default), `votes` or `modified` |
+| `-r` | reverse the sort order |
+
+Security (metadata) filters:
+
+| Option | Meaning |
+| --- | --- |
+| `-o` | only out-of-date packages (`OutOfDate != null`) |
+| `-u` | only orphaned packages (no maintainer) |
+| `-m <user>` | only packages from a maintainer (substring) |
+| `-l <text>` | filter by license (substring) |
+| `-i` | only packages with an `http://` (unencrypted) source URL |
+| `-x` | only packages whose source URL points at a direct IP |
+| `--short` | only packages using a URL shortener/pastebin (`bit.ly`, `tinyurl`, `t.co`, ...) |
+| `--nolicense` | only packages with no declared license |
+| `-c` | only recent submissions with high popularity (suspicious spikes) |
+| `-k` | only packages with risky keywords (`keygen`, `crack`, `wallet`, `miner`, ...) |
+| `--risk <n>` | only show packages with a risk score >= n (the `risk` column is always printed) |
+
+Typosquatting options (require `python3`):
+
+| Option | Meaning |
+| --- | --- |
+| `-y` | only show packages whose name resembles a popular one |
+| `-d <n>` | maximum edit distance to consider a match (default 1) |
+| `-w <n>` | maximum votes for a package to be considered suspicious (default 200) |
+| `--typo-scan <n>` | candidate scan window for `-y` (default 3000) |
+
+### Risk score
+
+Each package is given a `risk` score (0 = no signals, max ~9). It is a
+*review hint, not a verdict* — legitimate packages can score points for
+innocuous signals such as a missing license declaration.
+
+| Signal | Points |
+| --- | --- |
+| No maintainer (orphaned) | +1 |
+| Out-of-date | +1 |
+| `http://` source URL (not encrypted) | +1 |
+| Source URL pointing at a direct IP | +2 |
+| Source URL using a shortener/pastebin | +2 |
+| No declared license | +1 |
+| Submitted recently (< 60 days) | +1 |
+
+### How typosquatting detection works
+
+With `-y`, the script does not just scan the top-`N` results (which are all
+famous, high-vote packages). It scans a wider **candidate window**: the top
+`--typo-scan` packages (default 3000) by popularity **with fewer than `-w`
+votes** (default 200). It then normalizes each name (lowercase, strips common
+suffixes like `-git`, `-bin`, `-static`) and compares it against ~80 well-known
+package names with a Levenshtein edit distance. Names shorter than 4 characters
+are ignored to avoid noise (e.g. `pi` vs `pip`). If nothing is found, a hint
+(`-d 2` / `-w 5000` give more reach) is printed.
+
+### Examples
+
+```bash
+./search-aur.sh 50                                    # top 50 by popularity
+./search-aur.sh -q 'git' -v 500 20                    # search + minimum votes
+./search-aur.sh --risk 3 -s votes 10                  # risk >= 3, ranked by votes
+./search-aur.sh -o -i -x -s modified 50               # out-of-date / http / direct IP, most recent
+./search-aur.sh -k -u --risk 2 20                     # risky keywords + orphans, risk >= 2
+./search-aur.sh -y                                    # typosquats across the wide scan window
+./search-aur.sh -y -d 2 -w 500 10                     # wider distance / more votes
+```
+
+> Note: the risk threshold is `--risk <n>` (a long flag); `-r` is reserved for
+> reversing the sort order.
+
 ## Output and installation
 
 After a successful build the package is available at:
